@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhisperSphere</title>
+    <style>
+        body { margin: 0; padding: 20px; background: #1a1a1a; color: white; font-family: Arial, sans-serif; }
+        .container { max-width: 400px; margin: 0 auto; }
+        input, button { width: 100%; padding: 15px; margin: 10px 0; border: none; border-radius: 5px; font-size: 16px; }
+        button { background: #2196F3; color: white; cursor: pointer; }
+        button:hover { background: #1976D2; }
+        button:disabled { background: #666; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; background: #333; }
+        .messages { height: 200px; overflow-y: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WhisperSphere</h1>
+        <p>Secure Voice Chat</p>
+        
+        <input type="text" id="roomCode" placeholder="Room Code" />
+        <input type="password" id="sessionPw" placeholder="Session Password" />
+        <input type="text" id="nickname" placeholder="Nickname" />
+        <input type="text" id="serverUrl" placeholder="Server URL" value="localhost:8000" />
+        
+        <button onclick="connect()" id="connectBtn">Connect</button>
+        <button onclick="toggleCall()" id="callBtn" disabled>Start Call</button>
+        
+        <div class="status" id="status">Ready to connect...</div>
+        <div class="status messages" id="messages">Messages will appear here...</div>
+        
+        <input type="text" id="messageInput" placeholder="Type a message..." onkeypress="if(event.key==='Enter') sendMessage()" />
+        <button onclick="sendMessage()">Send</button>
+    </div>
+    
+    <script>
+        let ws = null;
+        let isConnected = false;
+        let isInCall = false;
+        let mediaRecorder = null;
+        let audioStream = null;
+        
+        function updateStatus(message) {
+            document.getElementById('status').textContent = message;
+        }
+        
+        function addMessage(message) {
+            const messages = document.getElementById('messages');
+            const timestamp = new Date().toLocaleTimeString();
+            messages.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            messages.scrollTop = messages.scrollHeight;
+        }
+        
+        async function connect() {
+            const roomCode = document.getElementById('roomCode').value;
+            const nickname = document.getElementById('nickname').value;
+            const serverUrl = document.getElementById('serverUrl').value;
+            
+            if (!roomCode || !nickname || !serverUrl) {
+                alert('Please fill all fields');
+                return;
+            }
+            
+            try {
+                updateStatus('Connecting...');
+                
+                // Hash room code (simplified)
+                const hashedRoom = btoa(roomCode).replace(/[^a-zA-Z0-9]/g, '');
+                
+                // Connect WebSocket
+                const protocol = serverUrl.includes('localhost') ? 'ws' : 'wss';
+                ws = new WebSocket(`${protocol}://${serverUrl}/ws/${hashedRoom}`);
+                
+                ws.onopen = () => {
+                    isConnected = true;
+                    updateStatus('Connected!');
+                    document.getElementById('connectBtn').disabled = true;
+                    document.getElementById('callBtn').disabled = false;
+                    addMessage('Connected to secure chat!');
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    handleMessage(data);
+                };
+                
+                ws.onclose = () => {
+                    isConnected = false;
+                    updateStatus('Disconnected');
+                    document.getElementById('connectBtn').disabled = false;
+                    document.getElementById('callBtn').disabled = true;
+                };
+                
+                ws.onerror = (error) => {
+                    updateStatus('Connection failed');
+                    addMessage('Connection error: ' + error);
+                };
+                
+            } catch (error) {
+                updateStatus('Connection failed');
+                addMessage('Error: ' + error.message);
+            }
+        }
+        
+        function handleMessage(data) {
+            if (data.type === 'msg') {
+                addMessage(`${data.nickname || 'User'}: ${data.message}`);
+            } else if (data.type === 'call_offer') {
+                addMessage('Incoming call...');
+                if (confirm('Accept incoming call?')) {
+                    acceptCall();
+                }
+            } else if (data.type === 'call_answer') {
+                addMessage('Call connected!');
+            } else if (data.type === 'call_end') {
+                endCall();
+            }
+        }
+        
+        async function toggleCall() {
+            if (!isInCall) {
+                await startCall();
+            } else {
+                endCall();
+            }
+        }
+        
+        async function startCall() {
+            try {
+                updateStatus('Starting call...');
+                
+                // Get microphone access
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                isInCall = true;
+                document.getElementById('callBtn').textContent = 'End Call';
+                document.getElementById('callBtn').style.background = '#f44336';
+                
+                // Send call offer
+                ws.send(JSON.stringify({
+                    type: 'call_offer',
+                    nickname: document.getElementById('nickname').value,
+                    timestamp: Date.now()
+                }));
+                
+                addMessage('Call started');
+                updateStatus('In call');
+                
+            } catch (error) {
+                addMessage('Microphone access denied: ' + error.message);
+                updateStatus('Call failed');
+            }
+        }
+        
+        function acceptCall() {
+            startCall();
+            ws.send(JSON.stringify({
+                type: 'call_answer',
+                nickname: document.getElementById('nickname').value,
+                timestamp: Date.now()
+            }));
+        }
+        
+        function endCall() {
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            isInCall = false;
+            document.getElementById('callBtn').textContent = 'Start Call';
+            document.getElementById('callBtn').style.background = '#2196F3';
+            
+            if (ws) {
+                ws.send(JSON.stringify({
+                    type: 'call_end',
+                    timestamp: Date.now()
+                }));
+            }
+            
+            addMessage('Call ended');
+            updateStatus('Connected');
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || !isConnected) return;
+            
+            ws.send(JSON.stringify({
+                type: 'msg',
+                nickname: document.getElementById('nickname').value,
+                message: message,
+                timestamp: Date.now()
+            }));
+            
+            addMessage(`You: ${message}`);
+            input.value = '';
+        }
+        
+        // Initialize app
+        console.log('WhisperSphere Android App loaded');
+    </script>
+</body>
+</html>
