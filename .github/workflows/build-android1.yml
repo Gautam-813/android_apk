@@ -1,4 +1,4 @@
-name: Build WhisperSphere Android APK
+name: Build WhisperSphere Android APK (Debug)
 
 on:
   workflow_dispatch:
@@ -19,8 +19,16 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
     
+    - name: Verify Java Installation
+      run: |
+        java -version
+        javac -version
+        echo "JAVA_HOME: $JAVA_HOME"
+    
     - name: Setup Android SDK
       run: |
+        echo "📱 Setting up Android SDK..."
+        
         # Download Android command line tools
         wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
         unzip -q commandlinetools-linux-11076708_latest.zip
@@ -33,69 +41,145 @@ jobs:
         export ANDROID_HOME=$HOME/android-sdk
         export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
         
-        # Accept licenses and install required packages
-        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
-        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
-        
-        # Add to GitHub environment for next steps
         echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
         echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
         echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+        
+        echo "✅ Android SDK setup complete"
     
-    - name: Cache Gradle Dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-
-    
-    - name: Setup Project
+    - name: Accept Android Licenses
       run: |
-        cd final_apk
+        echo "📋 Accepting Android SDK licenses..."
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+        echo "✅ Licenses accepted"
+    
+    - name: Install Android Packages
+      run: |
+        echo "📦 Installing Android packages..."
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+        echo "✅ Packages installed"
+    
+    - name: Verify Project Structure
+      run: |
+        echo "📁 Checking project structure..."
+        ls -la
+        echo "📁 Checking final_apk folder..."
+        ls -la final_apk/ || echo "❌ final_apk folder not found!"
+        echo "📁 Checking final_apk/app folder..."
+        ls -la final_apk/app/ || echo "❌ final_apk/app folder not found!"
+        echo "📁 Checking build.gradle files..."
+        find final_apk -name "build.gradle" -type f -exec echo "Found: {}" \;
+    
+    - name: Fix Project Structure (if needed)
+      run: |
+        echo "🔧 Ensuring proper project structure..."
         
-        # Create Gradle wrapper
-        gradle wrapper --gradle-version 8.0
-        chmod +x gradlew
-        
-        # Create gradle.properties
-        cat > gradle.properties << EOF
+        # Check if we need to create missing files
+        if [ ! -f "final_apk/gradle.properties" ]; then
+          echo "Creating gradle.properties..."
+          cat > final_apk/gradle.properties << EOF
         android.useAndroidX=true
         android.enableJetifier=true
         org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
         org.gradle.daemon=false
         EOF
-    
-    - name: Build APK
-      run: |
-        cd final_apk
-        ./gradlew assembleDebug --stacktrace
-    
-    - name: Find and Display APK
-      run: |
-        echo "🔍 Looking for APK files..."
-        find final_apk -name "*.apk" -type f -exec ls -la {} \;
+        fi
         
-        APK_FILE=$(find final_apk -name "app-debug.apk" -type f | head -1)
+        # Check if we need to create gradlew
+        if [ ! -f "final_apk/gradlew" ]; then
+          echo "Creating Gradle wrapper..."
+          cd final_apk
+          gradle wrapper --gradle-version 8.0
+          cd ..
+        fi
+        
+        # Make gradlew executable
+        chmod +x final_apk/gradlew
+        
+        echo "✅ Project structure fixed"
+    
+    - name: Display Build Configuration
+      run: |
+        echo "🔍 Build configuration:"
+        echo "ANDROID_HOME: $ANDROID_HOME"
+        echo "JAVA_HOME: $JAVA_HOME"
+        echo "PATH: $PATH"
+        
+        echo "📋 Gradle version:"
+        cd final_apk
+        ./gradlew --version
+        
+        echo "📋 Android SDK packages:"
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --list_installed
+    
+    - name: Clean Build
+      run: |
+        echo "🧹 Cleaning previous build..."
+        cd final_apk
+        ./gradlew clean --stacktrace
+    
+    - name: Build Debug APK
+      run: |
+        echo "🔨 Building APK..."
+        cd final_apk
+        ./gradlew assembleDebug --stacktrace --info --debug
+      continue-on-error: true
+    
+    - name: Check Build Results
+      run: |
+        echo "🔍 Checking build results..."
+        find final_apk -name "*.apk" -type f -exec ls -la {} \; || echo "No APK files found"
+        
+        echo "📁 Checking build directory:"
+        ls -la final_apk/app/build/ || echo "Build directory not found"
+        
+        echo "📁 Checking outputs directory:"
+        ls -la final_apk/app/build/outputs/ || echo "Outputs directory not found"
+        
+        echo "📁 Checking APK directory:"
+        ls -la final_apk/app/build/outputs/apk/ || echo "APK directory not found"
+        
+        echo "📁 Checking debug directory:"
+        ls -la final_apk/app/build/outputs/apk/debug/ || echo "Debug directory not found"
+    
+    - name: Show Build Logs (if build failed)
+      if: failure()
+      run: |
+        echo "❌ Build failed. Showing logs..."
+        echo "📋 Gradle daemon logs:"
+        find $HOME/.gradle -name "*.log" -type f -exec echo "=== {} ===" \; -exec cat {} \; || echo "No Gradle logs found"
+        
+        echo "📋 Build logs:"
+        find final_apk -name "*.log" -type f -exec echo "=== {} ===" \; -exec cat {} \; || echo "No build logs found"
+    
+    - name: Upload APK (if found)
+      if: always()
+      run: |
+        APK_FILE=$(find final_apk -name "*.apk" -type f | head -1)
         if [ -f "$APK_FILE" ]; then
           echo "✅ APK found: $APK_FILE"
-          echo "📦 Size: $(du -h "$APK_FILE" | cut -f1)"
+          echo "APK_PATH=$APK_FILE" >> $GITHUB_ENV
         else
-          echo "❌ APK not found"
+          echo "❌ No APK file found"
+          echo "APK_PATH=" >> $GITHUB_ENV
         fi
     
     - name: Upload APK Artifact
+      if: env.APK_PATH != ''
       uses: actions/upload-artifact@v4
       with:
         name: WhisperSphere-Android-APK
-        path: final_apk/app/build/outputs/apk/debug/app-debug.apk
+        path: ${{ env.APK_PATH }}
         retention-days: 30
     
-    - name: Upload All APKs (backup)
+    - name: Upload Build Logs
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: All-APK-Files
-        path: final_apk/**/*.apk
-        retention-days: 30
+        name: Build-Logs
+        path: |
+          final_apk/app/build/reports/
+          final_apk/app/build/outputs/logs/
+          $HOME/.gradle/daemon/*/daemon-*.out.log
+        retention-days: 7
+      continue-on-error: true
