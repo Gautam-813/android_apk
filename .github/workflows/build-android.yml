@@ -1,11 +1,7 @@
-name: Build Android APK
+name: Build Android APK (Simplified)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,12 +17,23 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
     
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      with:
-        api-level: 33
-        target: default
-        arch: x86_64
+    - name: Setup Android SDK manually
+      run: |
+        # Download and setup Android SDK
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q commandlinetools-linux-11076708_latest.zip
+        mkdir -p $HOME/android-sdk/cmdline-tools
+        mv cmdline-tools $HOME/android-sdk/cmdline-tools/latest
+        
+        # Set environment variables
+        echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
+        echo "$HOME/android-sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+        echo "$HOME/android-sdk/platform-tools" >> $GITHUB_PATH
+        
+        # Accept licenses and install packages
+        export ANDROID_HOME=$HOME/android-sdk
+        yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+        $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
     
     - name: Cache Gradle packages
       uses: actions/cache@v3
@@ -38,32 +45,43 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
     
-    - name: Create Gradle Wrapper
+    - name: Setup Gradle Wrapper
       run: |
         cd final_apk
         gradle wrapper --gradle-version 8.0
-    
-    - name: Grant execute permission for gradlew
-      run: chmod +x final_apk/gradlew
+        chmod +x gradlew
     
     - name: Create gradle.properties
       run: |
         cd final_apk
-        echo "android.useAndroidX=true" > gradle.properties
-        echo "android.enableJetifier=true" >> gradle.properties
-        echo "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8" >> gradle.properties
+        cat > gradle.properties << EOF
+        android.useAndroidX=true
+        android.enableJetifier=true
+        org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+        org.gradle.daemon=false
+        EOF
     
     - name: Build Debug APK
       run: |
         cd final_apk
-        ./gradlew assembleDebug --stacktrace --info
-    
-    - name: List APK files (for debugging)
-      run: find final_apk -name "*.apk" -type f
+        export ANDROID_HOME=$HOME/android-sdk
+        ./gradlew assembleDebug --stacktrace
     
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: whispersphere-debug-apk
-        path: final_apk/app/build/outputs/apk/debug/*.apk
+        name: whispersphere-android-apk
+        path: final_apk/app/build/outputs/apk/debug/app-debug.apk
         retention-days: 30
+    
+    - name: Show APK info
+      run: |
+        APK_PATH=$(find final_apk -name "app-debug.apk" -type f | head -1)
+        if [ -f "$APK_PATH" ]; then
+          echo "✅ APK built successfully!"
+          echo "📱 APK location: $APK_PATH"
+          echo "📦 APK size: $(du -h "$APK_PATH" | cut -f1)"
+        else
+          echo "❌ APK not found"
+          find final_apk -name "*.apk" -type f
+        fi
